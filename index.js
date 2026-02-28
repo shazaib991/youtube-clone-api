@@ -59,33 +59,54 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model("User", userSchema);
 
-// connect once at startup instead of on every request
-const uri = `mongodb+srv://${process.env.userNameMongodb}:${process.env.password}@cluster0.nxzntvt.mongodb.net/`;
-(async () => {
-	await connectToDatabase(uri);
-	// only start listening if we're running normally; Vercel will handle requests itself
-	if (!isServerless) {
+// pick up a full URI if provided (Vercel often sets MONGODB_URI)
+const uri =
+	process.env.MONGODB_URI ||
+	`mongodb+srv://${process.env.userNameMongodb}:${process.env.password}@cluster0.nxzntvt.mongodb.net/`;
+
+// cache connection for serverless environments
+let mongoosePromise = null;
+async function ensureDbConnection() {
+	if (mongoosePromise) return mongoosePromise;
+	mongoosePromise = connectToDatabase(uri);
+	return mongoosePromise;
+}
+
+// if running normally we can fire off the connection on startup
+if (!isServerless) {
+	(async () => {
+		await ensureDbConnection();
 		app.listen(PORT, () => {
 			console.log(`Server is running on http://localhost:${PORT}`);
 		});
-	}
-})();
+	})();
+} else {
+	// for serverless, connection will be established on first invocation
+	console.log("Running in serverless mode, DB will connect on demand");
+}
 
 async function connectToDatabase(uri) {
 	try {
-		// Wait for the connection to be established
-		await mongoose.connect(uri);
-		console.log("Database connected successfully");
+		// Wait for the connection to be established (mongoose caches internally too)
+		const conn = await mongoose.connect(uri, {
+			useNewUrlParser: true,
+			useUnifiedTopology: true,
+		});
+		console.log("Database connected successfully to", conn.connection.db.databaseName);
+		return conn;
 	} catch (err) {
 		console.error("Database connection failed", err);
-		// It is good practice to shut down the application if the DB connection fails
+		// in a serverless environment we can't just exit, so rethrow
+		if (isServerless) throw err;
 		process.exit(1);
 	}
 }
 
 async function runSearch() {
 	// returns an array of { baseName, videoUrl, imageUrl } objects
-	// assume DB connection already established
+	// ensure we have a connection (important in serverless)
+	await ensureDbConnection();
+	console.log("runSearch: connection state", mongoose.connection.readyState);
 	const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
 		bucketName: "youtube-clone-bucket",
 	});
@@ -243,7 +264,9 @@ app.get("/", (req, res) => {
 
 app.get("/search", async (req, res) => {
 	try {
+		await ensureDbConnection();
 		const results = await runSearch();
+		console.log(`/search returning ${results.length} entries`);
 		// build absolute urls so frontend can use them directly
 		const base = `${req.protocol}://${req.get("host")}`;
 		const updated = results.map((r) => ({
