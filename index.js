@@ -264,7 +264,12 @@ app.get("/", (req, res) => {
 
 app.get("/search", async (req, res) => {
 	try {
-		await ensureDbConnection();
+		try {
+			await ensureDbConnection();
+		} catch (e) {
+			console.error("/search could not connect to DB", e);
+			return res.status(503).send({error: "database connection failed"});
+		}
 		const results = await runSearch();
 		console.log(`/search returning ${results.length} entries`);
 		// build absolute urls so frontend can use them directly
@@ -346,7 +351,12 @@ app.get("/file/:id", async (req, res) => {
 
 	try {
 		// ensure DB connection (important for serverless)
-		await ensureDbConnection();
+		try {
+			await ensureDbConnection();
+		} catch (e) {
+			console.error("/file could not connect to DB", e);
+			return res.status(503).send("Database not connected");
+		}
 		if (mongoose.connection.readyState !== 1) {
 			console.log("DB not ready after ensureDbConnection, state", mongoose.connection.readyState);
 			return res.status(503).send("Database not connected");
@@ -407,7 +417,7 @@ app.get("/file/:id", async (req, res) => {
 		});
 		download.pipe(res);
 	} catch (e) {
-		console.log("/file handler caught", e);
+		console.log("/file handler caught", e, e.stack);
 		return res.status(500).send("Internal error");
 	}
 });
