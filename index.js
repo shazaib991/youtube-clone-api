@@ -63,6 +63,10 @@ const User = mongoose.model("User", userSchema);
 const uri =
 	process.env.MONGODB_URI ||
 	`mongodb+srv://${process.env.userNameMongodb}:${process.env.password}@cluster0.nxzntvt.mongodb.net/`;
+if (!uri) {
+	console.error("No MongoDB URI configured! set MONGODB_URI or userNameMongodb/password env vars.");
+}
+console.log("Using MongoDB URI (hidden credentials):", uri.replace(/(mongodb\+srv:\/\/)[^@]+@/, "$1***@"));
 
 // cache connection for serverless environments
 let mongoosePromise = null;
@@ -95,7 +99,9 @@ async function connectToDatabase(uri) {
 		console.log("Database connected successfully to", conn.connection.db.databaseName);
 		return conn;
 	} catch (err) {
-		console.error("Database connection failed", err);
+		console.error("Database connection failed", err.message || err);
+		// log stack to Vercel logs for diagnosis
+		console.error(err.stack);
 		// in a serverless environment we can't just exit, so rethrow
 		if (isServerless) throw err;
 		process.exit(1);
