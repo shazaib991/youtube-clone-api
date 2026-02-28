@@ -345,9 +345,10 @@ app.get("/file/:id", async (req, res) => {
 	console.log("/file request", req.params.id);
 
 	try {
-		// ensure DB connected
+		// ensure DB connection (important for serverless)
+		await ensureDbConnection();
 		if (mongoose.connection.readyState !== 1) {
-			console.log("DB not ready, state", mongoose.connection.readyState);
+			console.log("DB not ready after ensureDbConnection, state", mongoose.connection.readyState);
 			return res.status(503).send("Database not connected");
 		}
 
