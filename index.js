@@ -1,5 +1,6 @@
 const express = require("express");
 const fs = require("fs");
+const os = require("os");
 const {MongoClient, ServerApiVersion, GridFSBucket} = require("mongodb");
 const mongoose = require("mongoose");
 const path = require("path");
@@ -11,10 +12,26 @@ const multer = require("multer");
 const jwt = require("jsonwebtoken");
 const cookieParser = require("cookie-parser");
 
+// determine if we're running in a serverless environment (e.g. Vercel)
+const isServerless = !!process.env.VERCEL;
+
+// compute directories; in serverless use /tmp because other paths are read-only/ephemeral
+const baseDir = isServerless ? os.tmpdir() : __dirname;
+const videoDir = path.join(baseDir, "videos");
+const imageDir = path.join(baseDir, "image-output");
+
+// make sure the directories exist
+if (!fs.existsSync(videoDir)) {
+	fs.mkdirSync(videoDir, {recursive: true});
+}
+if (!fs.existsSync(imageDir)) {
+	fs.mkdirSync(imageDir, {recursive: true});
+}
+
 // configure storage so that the uploaded file keeps its original extension
 const storage = multer.diskStorage({
 	destination: (req, file, cb) => {
-		cb(null, "videos/");
+		cb(null, videoDir);
 	},
 	filename: (req, file, cb) => {
 		// keep the original file name exactly as uploaded
@@ -27,7 +44,7 @@ const upload = multer({storage});
 require("dotenv").config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.use(cors({origin: true, credentials: true}));
 app.use(express.json()); // parse application/json
 app.use(cookieParser());
@@ -44,12 +61,14 @@ const User = mongoose.model("User", userSchema);
 
 // connect once at startup instead of on every request
 const uri = `mongodb+srv://${process.env.userNameMongodb}:${process.env.password}@cluster0.nxzntvt.mongodb.net/`;
-// delay server start until connection established
 (async () => {
 	await connectToDatabase(uri);
-	app.listen(PORT, () => {
-		console.log(`Server is running on http://localhost:${PORT}`);
-	});
+	// only start listening if we're running normally; Vercel will handle requests itself
+	if (!isServerless) {
+		app.listen(PORT, () => {
+			console.log(`Server is running on http://localhost:${PORT}`);
+		});
+	}
 })();
 
 async function connectToDatabase(uri) {
@@ -137,12 +156,13 @@ async function runUpload(videoPath) {
 	// derive names and output path for thumbnail
 	const filename = path.basename(videoPath);
 	const imagename = filename.replace(path.extname(filename), ".png");
-	const imageDir = path.join(__dirname, "./image-output");
-	const imagePath = path.join(imageDir, imagename);
+	// use baseDir so on Vercel we write into /tmp
+	const thumbDir = path.join(baseDir, "image-output");
+	const imagePath = path.join(thumbDir, imagename);
 
-	// make sure the image-output directory exists
-	if (!fs.existsSync(imageDir)) {
-		fs.mkdirSync(imageDir, {recursive: true});
+	// make sure the thumbnail directory exists
+	if (!fs.existsSync(thumbDir)) {
+		fs.mkdirSync(thumbDir, {recursive: true});
 	}
 
 	const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
@@ -412,3 +432,6 @@ app.post("/upload", upload.single("videoFile"), async (req, res) => {
 });
 
 // (server launched above once DB ready)
+
+// when deployed on a platform like Vercel the framework will import the app
+module.exports = app;
