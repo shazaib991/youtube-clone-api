@@ -92,10 +92,7 @@ if (!isServerless) {
 async function connectToDatabase(uri) {
 	try {
 		// Wait for the connection to be established (mongoose caches internally too)
-		const conn = await mongoose.connect(uri, {
-			useNewUrlParser: true,
-			useUnifiedTopology: true,
-		});
+		const conn = await mongoose.connect(uri); // options removed; modern mongoose handles parsing and topology automatically
 		console.log("Database connected successfully to", conn.connection.db.databaseName);
 		return conn;
 	} catch (err) {
