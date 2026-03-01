@@ -274,7 +274,7 @@ app.get("/search", async (req, res) => {
 			await ensureDbConnection();
 		} catch (e) {
 			console.error("/search could not connect to DB", e);
-			return res.status(503).send({error: "database connection failed"});
+			return res.status(503).send({error: "database connection failed", message: e.message || String(e)});
 		}
 		const results = await runSearch();
 		console.log(`/search returning ${results.length} entries`);
