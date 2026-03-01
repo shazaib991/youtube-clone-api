@@ -105,8 +105,8 @@ async function connectToDatabase(uri) {
 	}
 }
 
-async function runSearch() {
-	// returns an array of { baseName, videoUrl, imageUrl } objects
+async function runSearch(userId = null) {
+	// returns an array of { baseName, videoUrl, imageUrl, videoLength, title, channelImageUrl } objects
 	// ensure we have a connection (important in serverless)
 	await ensureDbConnection();
 	console.log("runSearch: connection state", mongoose.connection.readyState);
@@ -118,16 +118,23 @@ async function runSearch() {
 		console.error("GridFS bucket not initialized");
 		return [];
 	}
-	const cursor = bucket.find({});
+	// if a userId is provided, only return videos uploaded by that user
+	// explicitly exclude any channel images from the main result set
+	const baseQuery = userId ? {"metadata.userId": userId} : {};
+	const videoQuery = {...baseQuery, "metadata.type": {$ne: "channel"}};
+	const cursor = bucket.find(videoQuery);
 	let docs = [];
 	await cursor.forEach((doc) => docs.push(doc));
+
+	// collect unique userIds so we can fetch channel images
+	const userIds = new Set();
 
 	// group by base filename (without extension)
 	const map = {};
 	docs.forEach((doc) => {
 		const base = path.basename(doc.filename, path.extname(doc.filename));
 		if (!map[base]) {
-			map[base] = {baseName: base, videoUrl: null, imageUrl: null};
+			map[base] = {baseName: base, videoUrl: null, imageUrl: null, title: null, channelImageUrl: null};
 		}
 		const url = `/file/${doc._id}`;
 		let ctype = doc.contentType || (doc.metadata && doc.metadata.contentType);
@@ -148,18 +155,47 @@ async function runSearch() {
 			const m = Math.floor((dur % 3600) / 60);
 			const s = Math.floor(dur % 60);
 			map[base].videoLength = `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+			// preserve title if present
+			if (doc.metadata?.title) {
+				map[base].title = doc.metadata.title;
+			}
+			if (doc.metadata?.userId) {
+				map[base].userId = doc.metadata.userId;
+				userIds.add(doc.metadata.userId);
+			}
 		} else if (ctype && ctype.startsWith("image")) {
 			map[base].imageUrl = url;
-		} else {
-			console.warn("runSearch: could not determine type for", doc.filename, "ctype", ctype);
 		}
 	});
+
+	// fetch channel images for collected users
+	if (userIds.size > 0) {
+		const uidArray = Array.from(userIds);
+		const chanCursor = bucket.find({
+			"metadata.type": "channel",
+			"metadata.userId": {$in: uidArray},
+		});
+		const channelDocs = [];
+		await chanCursor.forEach((d) => channelDocs.push(d));
+		const channelMap = {};
+		channelDocs.forEach((d) => {
+			if (!channelMap[d.metadata.userId]) {
+				channelMap[d.metadata.userId] = `/file/${d._id}`;
+			}
+		});
+		Object.values(map).forEach((entry) => {
+			if (entry.userId && channelMap[entry.userId]) {
+				entry.channelImageUrl = channelMap[entry.userId];
+			}
+		});
+	}
 
 	return Object.values(map);
 }
 
-async function runUpload(videoPath) {
+async function runUpload(videoPath, opts = {}) {
 	// videoPath should be an absolute path to the MP4 file
+	// opts may include title and userId
 	// DB is already connected
 
 	// get duration using ffprobe synchronously
@@ -217,10 +253,13 @@ async function runUpload(videoPath) {
 			.on("error", (err) => reject(err));
 	});
 
-	// upload video (include duration metadata so search can use it)
+	// upload video (include duration metadata plus title/userId)
+	let metadata = {source: "local upload", duration: durationSecs};
+	if (opts.title) metadata.title = opts.title;
+	if (opts.userId) metadata.userId = opts.userId.toString();
 	let uploadStream = bucket.openUploadStream(filename, {
 		contentType: "video/mp4",
-		metadata: {source: "local upload", duration: durationSecs},
+		metadata,
 	});
 	let readStream = fs.createReadStream(videoPath);
 
@@ -238,10 +277,10 @@ async function runUpload(videoPath) {
 		console.error("Failed to delete local video", err);
 	}
 
-	// upload thumbnail
+	// upload thumbnail (propagate userId so search filter picks it up)
 	uploadStream = bucket.openUploadStream(imagename, {
 		contentType: "image/png",
-		metadata: {source: "local upload"},
+		metadata: Object.assign({source: "local upload"}, opts.userId ? {userId: opts.userId.toString()} : {}),
 	});
 	readStream = fs.createReadStream(imagePath);
 
@@ -265,7 +304,7 @@ app.get("/", (req, res) => {
 	res.send("Hello World! Your API is running.");
 });
 
-app.get("/search", async (req, res) => {
+app.get("/search", requireAuth, async (req, res) => {
 	try {
 		try {
 			await ensureDbConnection();
@@ -273,15 +312,17 @@ app.get("/search", async (req, res) => {
 			console.error("/search could not connect to DB", e);
 			return res.status(503).send({error: "database connection failed", message: e.message || String(e)});
 		}
-		const results = await runSearch();
-		console.log(`/search returning ${results.length} entries`);
+		const results = await runSearch(req.user.userId);
+		console.log(`/search returning ${results.length} entries for user ${req.user.userId}`);
 		// build absolute urls so frontend can use them directly
 		const base = `${req.protocol}://${req.get("host")}`;
 		const updated = results.map((r) => ({
 			baseName: r.baseName,
+			title: r.title || r.baseName,
 			videoUrl: r.videoUrl ? base + r.videoUrl : null,
 			imageUrl: r.imageUrl ? base + r.imageUrl : null,
 			videoLength: r.videoLength || null,
+			channelImageUrl: r.channelImageUrl ? base + r.channelImageUrl : null,
 		}));
 		return res.send(updated);
 	} catch (err) {
@@ -291,7 +332,10 @@ app.get("/search", async (req, res) => {
 });
 
 // user authentication endpoints
-app.post("/signup", async (req, res) => {
+// allow optional channel image when signing up
+const signupUpload = multer({storage}).single("channelImage");
+
+app.post("/signup", signupUpload, async (req, res) => {
 	const {username, password} = req.body;
 	if (!username || !password) return res.status(400).send({success: false, message: "username/password required"});
 	try {
@@ -299,6 +343,23 @@ app.post("/signup", async (req, res) => {
 		if (existing) return res.status(409).send({success: false, message: "username taken"});
 		const user = new User({username, password});
 		await user.save();
+		// if there is an uploaded channel image, put it in gridfs
+		if (req.file) {
+			await ensureDbConnection();
+			const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+				bucketName: "youtube-clone-bucket",
+			});
+			const uploadStream = bucket.openUploadStream(req.file.originalname, {
+				contentType: req.file.mimetype,
+				metadata: {type: "channel", userId: user._id.toString()},
+			});
+			fs.createReadStream(req.file.path)
+				.pipe(uploadStream)
+				.on("finish", () => {
+					// cleanup local file
+					fs.unlink(req.file.path, () => {});
+				});
+		}
 		// issue token
 		const token = jwt.sign({userId: user._id, username}, JWT_SECRET, {expiresIn: JWT_EXPIRES});
 		res.cookie("token", token, {httpOnly: true, maxAge: 7 * 24 * 3600 * 1000});
@@ -425,10 +486,10 @@ app.get("/file/:id", async (req, res) => {
 	}
 });
 
-app.post("/upload", upload.single("videoFile"), async (req, res) => {
+// require auth to upload and accept title field
+app.post("/upload", requireAuth, upload.single("videoFile"), async (req, res) => {
 	if (!req.file) return res.status(400).send("No file uploaded.");
-
-	// also accept optional username/password to create user? upload unrelated
+	const videoTitle = req.body.title || path.basename(req.file.originalname, path.extname(req.file.originalname));
 
 	// multer saved the file to disk under videos/ with original name
 	let uploadedPath = req.file.path;
@@ -455,8 +516,8 @@ app.post("/upload", upload.single("videoFile"), async (req, res) => {
 			uploadedPath = targetPath; // update to converted file
 		}
 
-		// push to GridFS with thumbnail
-		const result = await runUpload(path.resolve(uploadedPath));
+		// push to GridFS with thumbnail including metadata
+		const result = await runUpload(path.resolve(uploadedPath), {title: videoTitle, userId: req.user.userId});
 		return res.send({message: `File processed`, details: result});
 	} catch (err) {
 		console.error("Upload error:", err);
