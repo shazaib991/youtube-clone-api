@@ -118,9 +118,9 @@ async function runSearch(userId = null) {
 		console.error("GridFS bucket not initialized");
 		return [];
 	}
-	// if a userId is provided, only return videos uploaded by that user
-	// explicitly exclude any channel images from the main result set
-	const baseQuery = userId ? {"metadata.userId": userId} : {};
+	// ignore the requesting user - return everything (but still omit the channel-image files themselves)
+	// this makes /search deliver all videos after users upload them.
+	const baseQuery = {}; // no filtering by userId
 	const videoQuery = {...baseQuery, "metadata.type": {$ne: "channel"}};
 	const cursor = bucket.find(videoQuery);
 	let docs = [];
@@ -164,7 +164,12 @@ async function runSearch(userId = null) {
 				userIds.add(doc.metadata.userId);
 			}
 		} else if (ctype && ctype.startsWith("image")) {
-			map[base].imageUrl = url;
+			// choose which image field based on filename
+			if (doc.filename.toLowerCase().includes("highres")) {
+				map[base].highResImageUrl = url;
+			} else {
+				map[base].imageUrl = url;
+			}
 		}
 	});
 
@@ -190,6 +195,15 @@ async function runSearch(userId = null) {
 		});
 	}
 
+	// drop any entries that are only a high-res image (no video or regular thumbnail)
+	Object.keys(map).forEach((k) => {
+		const entry = map[k];
+		if (!entry.videoUrl && !entry.imageUrl) {
+			// usually this means the baseName ends with _highres
+			delete map[k];
+		}
+	});
+
 	return Object.values(map);
 }
 
@@ -200,6 +214,9 @@ async function runUpload(videoPath, opts = {}) {
 
 	// get duration using ffprobe synchronously
 	let durationSecs = 0;
+	// make sure ffmpeg/ffprobe binaries are known to fluent-ffmpeg
+	ffmpeg.setFfmpegPath(ffmpegStatic);
+	ffmpeg.setFfprobePath(ffprobeStatic.path);
 	try {
 		durationSecs = await new Promise((resolve, reject) => {
 			ffmpeg.ffprobe(videoPath, function (err, metadata) {
@@ -236,11 +253,10 @@ async function runUpload(videoPath, opts = {}) {
 		return {status: "failed", message: "bucket not initialized"};
 	}
 
-	// capture a frame as thumbnail
-	ffmpeg.setFfmpegPath(ffmpegStatic);
-	ffmpeg.setFfprobePath(ffprobeStatic.path);
+	// capture a frame as thumbnail (small and high-res)
 	const captureTime = "00:00:05";
 
+	// small thumbnail
 	await new Promise((resolve, reject) => {
 		ffmpeg(videoPath)
 			.screenshots({
@@ -248,6 +264,21 @@ async function runUpload(videoPath, opts = {}) {
 				filename: path.basename(imagePath),
 				folder: path.dirname(imagePath),
 				size: "320x240",
+			})
+			.on("end", () => resolve())
+			.on("error", (err) => reject(err));
+	});
+
+	// high resolution screenshot
+	const highResName = filename.replace(path.extname(filename), "_highres.png");
+	const highResPath = path.join(thumbDir, highResName);
+	await new Promise((resolve, reject) => {
+		ffmpeg(videoPath)
+			.screenshots({
+				timestamps: [captureTime],
+				filename: path.basename(highResPath),
+				folder: path.dirname(highResPath),
+				size: "1280x720",
 			})
 			.on("end", () => resolve())
 			.on("error", (err) => reject(err));
@@ -277,7 +308,7 @@ async function runUpload(videoPath, opts = {}) {
 		console.error("Failed to delete local video", err);
 	}
 
-	// upload thumbnail (propagate userId so search filter picks it up)
+	// upload small thumbnail (propagate userId so search filter picks it up)
 	uploadStream = bucket.openUploadStream(imagename, {
 		contentType: "image/png",
 		metadata: Object.assign({source: "local upload"}, opts.userId ? {userId: opts.userId.toString()} : {}),
@@ -291,11 +322,30 @@ async function runUpload(videoPath, opts = {}) {
 			.on("finish", () => resolve());
 	});
 
-	// delete thumbnail file as well
+	// upload high-res thumbnail too (re-use previously computed name/path)
+	uploadStream = bucket.openUploadStream(highResName, {
+		contentType: "image/png",
+		metadata: Object.assign({source: "local upload"}, opts.userId ? {userId: opts.userId.toString()} : {}),
+	});
+	readStream = fs.createReadStream(highResPath);
+
+	await new Promise((resolve, reject) => {
+		readStream
+			.pipe(uploadStream)
+			.on("error", (err) => reject(err))
+			.on("finish", () => resolve());
+	});
+
+	// delete thumbnail files as well
 	try {
 		await fs.promises.unlink(imagePath);
 	} catch (err) {
 		console.error("Failed to delete local thumbnail", err);
+	}
+	try {
+		await fs.promises.unlink(highResPath);
+	} catch (err) {
+		console.error("Failed to delete local high-res thumbnail", err);
 	}
 	return {status: "success", message: "uploaded video and thumbnail"};
 }
@@ -304,7 +354,8 @@ app.get("/", (req, res) => {
 	res.send("Hello World! Your API is running.");
 });
 
-app.get("/search", requireAuth, async (req, res) => {
+app.get("/search", async (req, res) => {
+	// public endpoint: anyone may fetch the video list, auth not required
 	try {
 		try {
 			await ensureDbConnection();
@@ -312,8 +363,8 @@ app.get("/search", requireAuth, async (req, res) => {
 			console.error("/search could not connect to DB", e);
 			return res.status(503).send({error: "database connection failed", message: e.message || String(e)});
 		}
-		const results = await runSearch(req.user.userId);
-		console.log(`/search returning ${results.length} entries for user ${req.user.userId}`);
+		const results = await runSearch();
+		console.log(`/search returning ${results.length} entries`);
 		// build absolute urls so frontend can use them directly
 		const base = `${req.protocol}://${req.get("host")}`;
 		const updated = results.map((r) => ({
@@ -322,6 +373,7 @@ app.get("/search", requireAuth, async (req, res) => {
 			videoUrl: r.videoUrl ? base + r.videoUrl : null,
 			imageUrl: r.imageUrl ? base + r.imageUrl : null,
 			videoLength: r.videoLength || null,
+			highResImageUrl: r.highResImageUrl ? base + r.highResImageUrl : null,
 			channelImageUrl: r.channelImageUrl ? base + r.channelImageUrl : null,
 		}));
 		return res.send(updated);
