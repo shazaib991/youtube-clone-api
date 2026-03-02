@@ -1,7 +1,7 @@
 const express = require("express");
 const fs = require("fs");
 const os = require("os");
-const {MongoClient, ServerApiVersion, GridFSBucket} = require("mongodb");
+const { MongoClient, ServerApiVersion, GridFSBucket } = require("mongodb");
 const mongoose = require("mongoose");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
@@ -22,10 +22,10 @@ const imageDir = path.join(baseDir, "image-output");
 
 // make sure the directories exist
 if (!fs.existsSync(videoDir)) {
-	fs.mkdirSync(videoDir, {recursive: true});
+	fs.mkdirSync(videoDir, { recursive: true });
 }
 if (!fs.existsSync(imageDir)) {
-	fs.mkdirSync(imageDir, {recursive: true});
+	fs.mkdirSync(imageDir, { recursive: true });
 }
 
 // configure storage so that the uploaded file keeps its original extension
@@ -40,12 +40,27 @@ const storage = multer.diskStorage({
 	},
 });
 
-const upload = multer({storage});
+const upload = multer({ storage });
 require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.use(cors({origin: true, credentials: true}));
+const ALLOWED_ORIGINS = [
+	"https://react-youtube-clone-woad.vercel.app",
+	"http://localhost:5173",
+	"http://localhost:3000",
+];
+app.use(
+	cors({
+		origin: (origin, callback) => {
+			// allow requests with no origin (e.g. curl, mobile apps)
+			if (!origin) return callback(null, true);
+			if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+			callback(new Error(`CORS: origin ${origin} not allowed`));
+		},
+		credentials: true,
+	})
+);
 app.use(express.json()); // parse application/json
 app.use(cookieParser());
 
@@ -54,7 +69,7 @@ const JWT_EXPIRES = "7d"; // stay logged in for a week
 
 // simple user model
 const userSchema = new mongoose.Schema({
-	username: {type: String, unique: true},
+	username: { type: String, unique: true },
 	password: String, // NOTE: plaintext for demo; hash in production
 	channelName: String, // optional display name for user's channel
 });
@@ -122,7 +137,7 @@ async function runSearch(userId = null) {
 	// ignore the requesting user - return everything (but still omit the channel-image files themselves)
 	// this makes /search deliver all videos after users upload them.
 	const baseQuery = {}; // no filtering by userId
-	const videoQuery = {...baseQuery, "metadata.type": {$ne: "channel"}};
+	const videoQuery = { ...baseQuery, "metadata.type": { $ne: "channel" } };
 	const cursor = bucket.find(videoQuery);
 	let docs = [];
 	await cursor.forEach((doc) => docs.push(doc));
@@ -135,7 +150,7 @@ async function runSearch(userId = null) {
 	docs.forEach((doc) => {
 		const base = path.basename(doc.filename, path.extname(doc.filename));
 		if (!map[base]) {
-			map[base] = {baseName: base, videoUrl: null, imageUrl: null, title: null, channelImageUrl: null};
+			map[base] = { baseName: base, videoUrl: null, imageUrl: null, title: null, channelImageUrl: null };
 		}
 		const url = `/file/${doc._id}`;
 		let ctype = doc.contentType || (doc.metadata && doc.metadata.contentType);
@@ -180,7 +195,7 @@ async function runSearch(userId = null) {
 		const uidArray = Array.from(userIds);
 		const chanCursor = bucket.find({
 			"metadata.type": "channel",
-			"metadata.userId": {$in: uidArray},
+			"metadata.userId": { $in: uidArray },
 		});
 		const channelDocs = [];
 		await chanCursor.forEach((d) => channelDocs.push(d));
@@ -191,7 +206,7 @@ async function runSearch(userId = null) {
 			}
 		});
 		// also grab the users' channel names (falling back to username if none set)
-		const users = await User.find({_id: {$in: uidArray}}).select("_id channelName username");
+		const users = await User.find({ _id: { $in: uidArray } }).select("_id channelName username");
 		users.forEach((u) => {
 			userChannelNames[u._id.toString()] = u.channelName || u.username || "";
 		});
@@ -249,7 +264,7 @@ async function runUpload(videoPath, opts = {}) {
 
 	// make sure the thumbnail directory exists
 	if (!fs.existsSync(thumbDir)) {
-		fs.mkdirSync(thumbDir, {recursive: true});
+		fs.mkdirSync(thumbDir, { recursive: true });
 	}
 
 	const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
@@ -260,7 +275,7 @@ async function runUpload(videoPath, opts = {}) {
 
 	if (!bucket) {
 		console.error("GridFS bucket not initialized");
-		return {status: "failed", message: "bucket not initialized"};
+		return { status: "failed", message: "bucket not initialized" };
 	}
 
 	// capture a frame as thumbnail (small and high-res)
@@ -295,7 +310,7 @@ async function runUpload(videoPath, opts = {}) {
 	});
 
 	// upload video (include duration metadata plus title/userId)
-	let metadata = {source: "local upload", duration: durationSecs};
+	let metadata = { source: "local upload", duration: durationSecs };
 	if (opts.title) metadata.title = opts.title;
 	if (opts.userId) metadata.userId = opts.userId.toString();
 	let uploadStream = bucket.openUploadStream(filename, {
@@ -321,7 +336,7 @@ async function runUpload(videoPath, opts = {}) {
 	// upload small thumbnail (propagate userId so search filter picks it up)
 	uploadStream = bucket.openUploadStream(imagename, {
 		contentType: "image/png",
-		metadata: Object.assign({source: "local upload"}, opts.userId ? {userId: opts.userId.toString()} : {}),
+		metadata: Object.assign({ source: "local upload" }, opts.userId ? { userId: opts.userId.toString() } : {}),
 	});
 	readStream = fs.createReadStream(imagePath);
 
@@ -335,7 +350,7 @@ async function runUpload(videoPath, opts = {}) {
 	// upload high-res thumbnail too (re-use previously computed name/path)
 	uploadStream = bucket.openUploadStream(highResName, {
 		contentType: "image/png",
-		metadata: Object.assign({source: "local upload"}, opts.userId ? {userId: opts.userId.toString()} : {}),
+		metadata: Object.assign({ source: "local upload" }, opts.userId ? { userId: opts.userId.toString() } : {}),
 	});
 	readStream = fs.createReadStream(highResPath);
 
@@ -357,7 +372,7 @@ async function runUpload(videoPath, opts = {}) {
 	} catch (err) {
 		console.error("Failed to delete local high-res thumbnail", err);
 	}
-	return {status: "success", message: "uploaded video and thumbnail"};
+	return { status: "success", message: "uploaded video and thumbnail" };
 }
 
 app.get("/", (req, res) => {
@@ -371,7 +386,7 @@ app.get("/search", async (req, res) => {
 			await ensureDbConnection();
 		} catch (e) {
 			console.error("/search could not connect to DB", e);
-			return res.status(503).send({error: "database connection failed", message: e.message || String(e)});
+			return res.status(503).send({ error: "database connection failed", message: e.message || String(e) });
 		}
 		const results = await runSearch();
 		console.log(`/search returning ${results.length} entries`);
@@ -396,15 +411,15 @@ app.get("/search", async (req, res) => {
 
 // user authentication endpoints
 // allow optional channel image when signing up
-const signupUpload = multer({storage}).single("channelImage");
+const signupUpload = multer({ storage }).single("channelImage");
 
 app.post("/signup", signupUpload, async (req, res) => {
-	const {username, password, channelName} = req.body;
-	if (!username || !password) return res.status(400).send({success: false, message: "username/password required"});
+	const { username, password, channelName } = req.body;
+	if (!username || !password) return res.status(400).send({ success: false, message: "username/password required" });
 	try {
-		const existing = await User.findOne({username});
-		if (existing) return res.status(409).send({success: false, message: "username taken"});
-		const user = new User({username, password, channelName});
+		const existing = await User.findOne({ username });
+		if (existing) return res.status(409).send({ success: false, message: "username taken" });
+		const user = new User({ username, password, channelName });
 		await user.save();
 		// if there is an uploaded channel image, put it in gridfs
 		if (req.file) {
@@ -414,56 +429,56 @@ app.post("/signup", signupUpload, async (req, res) => {
 			});
 			const uploadStream = bucket.openUploadStream(req.file.originalname, {
 				contentType: req.file.mimetype,
-				metadata: {type: "channel", userId: user._id.toString()},
+				metadata: { type: "channel", userId: user._id.toString() },
 			});
 			fs.createReadStream(req.file.path)
 				.pipe(uploadStream)
 				.on("finish", () => {
 					// cleanup local file
-					fs.unlink(req.file.path, () => {});
+					fs.unlink(req.file.path, () => { });
 				});
 		}
 		// issue token
-		const token = jwt.sign({userId: user._id, username}, JWT_SECRET, {expiresIn: JWT_EXPIRES});
-		res.cookie("token", token, {httpOnly: true, maxAge: 7 * 24 * 3600 * 1000});
-		return res.send({success: true});
+		const token = jwt.sign({ userId: user._id, username }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+		res.cookie("token", token, { httpOnly: true, maxAge: 7 * 24 * 3600 * 1000, sameSite: "none", secure: true });
+		return res.send({ success: true });
 	} catch (e) {
 		console.error("signup error", e);
-		return res.status(500).send({success: false});
+		return res.status(500).send({ success: false });
 	}
 });
 
 app.post("/signin", async (req, res) => {
-	const {username, password} = req.body;
-	if (!username || !password) return res.status(400).send({success: false, message: "username/password required"});
+	const { username, password } = req.body;
+	if (!username || !password) return res.status(400).send({ success: false, message: "username/password required" });
 	try {
-		const user = await User.findOne({username});
-		if (!user || user.password !== password) return res.status(401).send({success: false});
-		const token = jwt.sign({userId: user._id, username}, JWT_SECRET, {expiresIn: JWT_EXPIRES});
-		res.cookie("token", token, {httpOnly: true, maxAge: 7 * 24 * 3600 * 1000});
-		return res.send({success: true});
+		const user = await User.findOne({ username });
+		if (!user || user.password !== password) return res.status(401).send({ success: false });
+		const token = jwt.sign({ userId: user._id, username }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+		res.cookie("token", token, { httpOnly: true, maxAge: 7 * 24 * 3600 * 1000, sameSite: "none", secure: true });
+		return res.send({ success: true });
 	} catch (e) {
 		console.error("signin error", e);
-		return res.status(500).send({success: false});
+		return res.status(500).send({ success: false });
 	}
 });
 
 // signout clears the cookie
 app.post("/signout", (req, res) => {
-	res.clearCookie("token");
-	res.send({success: true});
+	res.clearCookie("token", { sameSite: "none", secure: true });
+	res.send({ success: true });
 });
 
 // middleware to verify JWT
 function requireAuth(req, res, next) {
 	const token = req.cookies.token;
-	if (!token) return res.status(401).send({success: false});
+	if (!token) return res.status(401).send({ success: false });
 	try {
 		const data = jwt.verify(token, JWT_SECRET);
 		req.user = data;
 		next();
 	} catch (e) {
-		return res.status(401).send({success: false});
+		return res.status(401).send({ success: false });
 	}
 }
 
@@ -503,7 +518,7 @@ app.get("/file/:id", async (req, res) => {
 		}
 
 		// fetch file metadata using promise style
-		const docs = await bucket.find({_id: objId}).toArray();
+		const docs = await bucket.find({ _id: objId }).toArray();
 		console.log("bucket.find promise result length", docs.length);
 		if (!docs || docs.length === 0) {
 			console.log("file not found for id", id);
@@ -580,15 +595,15 @@ app.post("/upload", requireAuth, upload.single("videoFile"), async (req, res) =>
 		}
 
 		// push to GridFS with thumbnail including metadata
-		const result = await runUpload(path.resolve(uploadedPath), {title: videoTitle, userId: req.user.userId});
-		return res.send({message: `File processed`, details: result});
+		const result = await runUpload(path.resolve(uploadedPath), { title: videoTitle, userId: req.user.userId });
+		return res.send({ message: `File processed`, details: result });
 	} catch (err) {
 		console.error("Upload error:", err);
 		// attempt cleanup of whatever might still exist
 		try {
 			await fs.promises.unlink(uploadedPath);
-		} catch {}
-		return res.status(500).send({error: "Failed to process upload"});
+		} catch { }
+		return res.status(500).send({ error: "Failed to process upload" });
 	}
 });
 
