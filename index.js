@@ -56,6 +56,7 @@ const JWT_EXPIRES = "7d"; // stay logged in for a week
 const userSchema = new mongoose.Schema({
 	username: {type: String, unique: true},
 	password: String, // NOTE: plaintext for demo; hash in production
+	channelName: String, // optional display name for user's channel
 });
 const User = mongoose.model("User", userSchema);
 
@@ -174,6 +175,7 @@ async function runSearch(userId = null) {
 	});
 
 	// fetch channel images for collected users
+	let userChannelNames = {};
 	if (userIds.size > 0) {
 		const uidArray = Array.from(userIds);
 		const chanCursor = bucket.find({
@@ -188,9 +190,17 @@ async function runSearch(userId = null) {
 				channelMap[d.metadata.userId] = `/file/${d._id}`;
 			}
 		});
+		// also grab the users' channel names (falling back to username if none set)
+		const users = await User.find({_id: {$in: uidArray}}).select("_id channelName username");
+		users.forEach((u) => {
+			userChannelNames[u._id.toString()] = u.channelName || u.username || "";
+		});
 		Object.values(map).forEach((entry) => {
 			if (entry.userId && channelMap[entry.userId]) {
 				entry.channelImageUrl = channelMap[entry.userId];
+			}
+			if (entry.userId && userChannelNames[entry.userId]) {
+				entry.channelName = userChannelNames[entry.userId];
 			}
 		});
 	}
@@ -375,6 +385,7 @@ app.get("/search", async (req, res) => {
 			videoLength: r.videoLength || null,
 			highResImageUrl: r.highResImageUrl ? base + r.highResImageUrl : null,
 			channelImageUrl: r.channelImageUrl ? base + r.channelImageUrl : null,
+			channelName: r.channelName || null,
 		}));
 		return res.send(updated);
 	} catch (err) {
@@ -388,12 +399,12 @@ app.get("/search", async (req, res) => {
 const signupUpload = multer({storage}).single("channelImage");
 
 app.post("/signup", signupUpload, async (req, res) => {
-	const {username, password} = req.body;
+	const {username, password, channelName} = req.body;
 	if (!username || !password) return res.status(400).send({success: false, message: "username/password required"});
 	try {
 		const existing = await User.findOne({username});
 		if (existing) return res.status(409).send({success: false, message: "username taken"});
-		const user = new User({username, password});
+		const user = new User({username, password, channelName});
 		await user.save();
 		// if there is an uploaded channel image, put it in gridfs
 		if (req.file) {
