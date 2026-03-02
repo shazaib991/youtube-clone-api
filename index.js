@@ -50,17 +50,21 @@ const ALLOWED_ORIGINS = [
 	"http://localhost:5173",
 	"http://localhost:3000",
 ];
-app.use(
-	cors({
-		origin: (origin, callback) => {
-			// allow requests with no origin (e.g. curl, mobile apps)
-			if (!origin) return callback(null, true);
-			if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-			callback(new Error(`CORS: origin ${origin} not allowed`));
-		},
-		credentials: true,
-	})
-);
+const corsOptions = {
+	origin: (origin, callback) => {
+		// allow requests with no origin (e.g. curl, mobile apps)
+		if (!origin) return callback(null, true);
+		if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+		callback(new Error(`CORS: origin ${origin} not allowed`));
+	},
+	credentials: true,
+	methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+	allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+// Handle preflight OPTIONS requests for ALL routes (must come before other middleware)
+app.options("*", cors(corsOptions));
+app.use(cors(corsOptions));
 app.use(express.json()); // parse application/json
 app.use(cookieParser());
 
