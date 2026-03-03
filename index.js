@@ -42,12 +42,18 @@ const baseDir = isServerless ? os.tmpdir() : __dirname;
 const videoDir = path.join(baseDir, "videos");
 const imageDir = path.join(baseDir, "image-output");
 
-// make sure the directories exist
-if (!fs.existsSync(videoDir)) {
-	fs.mkdirSync(videoDir, { recursive: true });
-}
-if (!fs.existsSync(imageDir)) {
-	fs.mkdirSync(imageDir, { recursive: true });
+// make sure the directories exist (safely)
+try {
+	if (!fs.existsSync(videoDir)) {
+		fs.mkdirSync(videoDir, { recursive: true });
+		console.log("Created video directory:", videoDir);
+	}
+	if (!fs.existsSync(imageDir)) {
+		fs.mkdirSync(imageDir, { recursive: true });
+		console.log("Created image directory:", imageDir);
+	}
+} catch (err) {
+	console.warn("Directory creation warning (ignoring if Vercel /tmp):", err.message);
 }
 
 // configure storage so that the uploaded file keeps its original extension
@@ -104,11 +110,15 @@ const User = mongoose.model("User", userSchema);
 // pick up a full URI if provided (Vercel often sets MONGODB_URI)
 const uri =
 	process.env.MONGODB_URI ||
-	`mongodb+srv://${process.env.userNameMongodb}:${process.env.password}@cluster0.nxzntvt.mongodb.net/`;
+	(process.env.userNameMongodb && process.env.password
+		? `mongodb+srv://${process.env.userNameMongodb}:${process.env.password}@cluster0.nxzntvt.mongodb.net/`
+		: "");
+
 if (!uri) {
-	console.error("No MongoDB URI configured! set MONGODB_URI or userNameMongodb/password env vars.");
+	console.error("No MongoDB URI configured! Please set MONGODB_URI or userNameMongodb/password environment variables.");
+} else {
+	console.log("Using MongoDB URI (hidden credentials):", uri.replace(/(mongodb\+srv:\/\/)[^@]+@/, "$1***@"));
 }
-console.log("Using MongoDB URI (hidden credentials):", uri.replace(/(mongodb\+srv:\/\/)[^@]+@/, "$1***@"));
 
 // cache connection for serverless environments
 let mongoosePromise = null;
