@@ -78,27 +78,33 @@ const ALLOWED_ORIGINS = [
 	"http://localhost:5173",
 	"http://localhost:3000",
 ];
+
 const corsOptions = {
 	origin: (origin, callback) => {
 		// allow requests with no origin (e.g. curl, mobile apps)
-		if (!origin) return callback(null, true);
-		if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-		callback(new Error(`CORS: origin ${origin} not allowed`));
+		if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+			callback(null, true);
+		} else {
+			callback(new Error(`CORS: origin ${origin} not allowed`));
+		}
 	},
 	credentials: true,
 	methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 	allowedHeaders: ["Content-Type", "Authorization"],
 };
 
+// 1. Handle preflight OPTIONS requests for ALL routes
+app.options("/:any*", cors(corsOptions));
+// 2. Apply CORS to all requests
+app.use(cors(corsOptions));
+
 // Basic health check
 app.get("/", (req, res) => {
 	res.send("Hello World! Your API is running.");
 });
 
-// Dedicated favicon route to prevent it from triggering other logic or crashing
+// Dedicated favicon route
 app.get("/favicon.ico", (req, res) => res.status(204).end());
-
-app.use(cors(corsOptions));
 app.use(express.json()); // parse application/json
 app.use(cookieParser());
 
