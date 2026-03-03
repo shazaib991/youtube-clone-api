@@ -8,15 +8,17 @@ const path = require("path");
 const isServerless = !!process.env.VERCEL;
 
 // Lazy-load ffmpeg and ffprobe only if not on Vercel to avoid size limit issues
+// We use dynamic names and eval('require') to hide these large binaries from Vercel's bundler.
 let ffmpeg = null;
 if (!isServerless) {
 	try {
 		ffmpeg = require("fluent-ffmpeg");
-		// Use dynamic strings to prevent the Vercel bundler from tracing these huge binaries
-		const ffmpegPkg = "@ffmpeg-installer/ffmpeg";
-		const ffprobePkg = "@ffprobe-installer/ffprobe";
-		const ffmpegInstaller = require(ffmpegPkg);
-		const ffprobeInstaller = require(ffprobePkg);
+		const ffmpegPackage = "@ffmpeg-installer/ffmpeg";
+		const ffprobePackage = "@ffprobe-installer/ffprobe";
+
+		// Use eval('require') to bypass static analysis during Vercel build
+		const ffmpegInstaller = eval('require')(ffmpegPackage);
+		const ffprobeInstaller = eval('require')(ffprobePackage);
 
 		ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 		ffmpeg.setFfprobePath(ffprobeInstaller.path);
