@@ -5,8 +5,18 @@ const { MongoClient, ServerApiVersion, GridFSBucket } = require("mongodb");
 const mongoose = require("mongoose");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
-const ffmpegStatic = require("ffmpeg-static");
-const ffprobeStatic = require("ffprobe-static");
+const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
+const ffprobeInstaller = require("@ffprobe-installer/ffprobe");
+
+// Set paths once at startup
+try {
+	ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+	ffmpeg.setFfprobePath(ffprobeInstaller.path);
+	console.log("ffmpeg path:", ffmpegInstaller.path);
+	console.log("ffprobe path:", ffprobeInstaller.path);
+} catch (e) {
+	console.error("Failed to set ffmpeg paths:", e.message);
+}
 const cors = require("cors");
 const multer = require("multer");
 const jwt = require("jsonwebtoken");
@@ -241,11 +251,8 @@ async function runUpload(videoPath, opts = {}) {
 	// opts may include title and userId
 	// DB is already connected
 
-	// get duration using ffprobe synchronously
+	// get duration using ffprobe (paths already set globally at startup)
 	let durationSecs = 0;
-	// make sure ffmpeg/ffprobe binaries are known to fluent-ffmpeg
-	ffmpeg.setFfmpegPath(ffmpegStatic);
-	ffmpeg.setFfprobePath(ffprobeStatic.path);
 	try {
 		durationSecs = await new Promise((resolve, reject) => {
 			ffmpeg.ffprobe(videoPath, function (err, metadata) {
@@ -284,34 +291,44 @@ async function runUpload(videoPath, opts = {}) {
 
 	// capture a frame as thumbnail (small and high-res)
 	const captureTime = "00:00:05";
+	let thumbnailGenerated = false;
 
 	// small thumbnail
-	await new Promise((resolve, reject) => {
-		ffmpeg(videoPath)
-			.screenshots({
-				timestamps: [captureTime],
-				filename: path.basename(imagePath),
-				folder: path.dirname(imagePath),
-				size: "320x240",
-			})
-			.on("end", () => resolve())
-			.on("error", (err) => reject(err));
-	});
+	try {
+		await new Promise((resolve, reject) => {
+			ffmpeg(videoPath)
+				.screenshots({
+					timestamps: [captureTime],
+					filename: path.basename(imagePath),
+					folder: path.dirname(imagePath),
+					size: "320x240",
+				})
+				.on("end", () => resolve())
+				.on("error", (err) => reject(err));
+		});
+		thumbnailGenerated = true;
+	} catch (e) {
+		console.error("ffmpeg thumbnail (small) error:", e.message);
+	}
 
 	// high resolution screenshot
 	const highResName = filename.replace(path.extname(filename), "_highres.png");
 	const highResPath = path.join(thumbDir, highResName);
-	await new Promise((resolve, reject) => {
-		ffmpeg(videoPath)
-			.screenshots({
-				timestamps: [captureTime],
-				filename: path.basename(highResPath),
-				folder: path.dirname(highResPath),
-				size: "1280x720",
-			})
-			.on("end", () => resolve())
-			.on("error", (err) => reject(err));
-	});
+	try {
+		await new Promise((resolve, reject) => {
+			ffmpeg(videoPath)
+				.screenshots({
+					timestamps: [captureTime],
+					filename: path.basename(highResPath),
+					folder: path.dirname(highResPath),
+					size: "1280x720",
+				})
+				.on("end", () => resolve())
+				.on("error", (err) => reject(err));
+		});
+	} catch (e) {
+		console.error("ffmpeg thumbnail (high-res) error:", e.message);
+	}
 
 	// upload video (include duration metadata plus title/userId)
 	let metadata = { source: "local upload", duration: durationSecs };
@@ -337,46 +354,56 @@ async function runUpload(videoPath, opts = {}) {
 		console.error("Failed to delete local video", err);
 	}
 
-	// upload small thumbnail (propagate userId so search filter picks it up)
-	uploadStream = bucket.openUploadStream(imagename, {
-		contentType: "image/png",
-		metadata: Object.assign({ source: "local upload" }, opts.userId ? { userId: opts.userId.toString() } : {}),
-	});
-	readStream = fs.createReadStream(imagePath);
+	// only upload thumbnails if they were successfully generated
+	if (thumbnailGenerated && fs.existsSync(imagePath)) {
+		// upload small thumbnail (propagate userId so search filter picks it up)
+		uploadStream = bucket.openUploadStream(imagename, {
+			contentType: "image/png",
+			metadata: Object.assign({ source: "local upload" }, opts.userId ? { userId: opts.userId.toString() } : {}),
+		});
+		readStream = fs.createReadStream(imagePath);
 
-	await new Promise((resolve, reject) => {
-		readStream
-			.pipe(uploadStream)
-			.on("error", (err) => reject(err))
-			.on("finish", () => resolve());
-	});
+		await new Promise((resolve, reject) => {
+			readStream
+				.pipe(uploadStream)
+				.on("error", (err) => reject(err))
+				.on("finish", () => resolve());
+		});
 
-	// upload high-res thumbnail too (re-use previously computed name/path)
-	uploadStream = bucket.openUploadStream(highResName, {
-		contentType: "image/png",
-		metadata: Object.assign({ source: "local upload" }, opts.userId ? { userId: opts.userId.toString() } : {}),
-	});
-	readStream = fs.createReadStream(highResPath);
-
-	await new Promise((resolve, reject) => {
-		readStream
-			.pipe(uploadStream)
-			.on("error", (err) => reject(err))
-			.on("finish", () => resolve());
-	});
-
-	// delete thumbnail files as well
-	try {
-		await fs.promises.unlink(imagePath);
-	} catch (err) {
-		console.error("Failed to delete local thumbnail", err);
+		// delete small thumbnail
+		try {
+			await fs.promises.unlink(imagePath);
+		} catch (err) {
+			console.error("Failed to delete local thumbnail", err);
+		}
+	} else {
+		console.warn("Skipping thumbnail upload (ffmpeg could not generate it)");
 	}
-	try {
-		await fs.promises.unlink(highResPath);
-	} catch (err) {
-		console.error("Failed to delete local high-res thumbnail", err);
+
+	if (fs.existsSync(highResPath)) {
+		// upload high-res thumbnail
+		uploadStream = bucket.openUploadStream(highResName, {
+			contentType: "image/png",
+			metadata: Object.assign({ source: "local upload" }, opts.userId ? { userId: opts.userId.toString() } : {}),
+		});
+		readStream = fs.createReadStream(highResPath);
+
+		await new Promise((resolve, reject) => {
+			readStream
+				.pipe(uploadStream)
+				.on("error", (err) => reject(err))
+				.on("finish", () => resolve());
+		});
+
+		// delete high-res thumbnail
+		try {
+			await fs.promises.unlink(highResPath);
+		} catch (err) {
+			console.error("Failed to delete local high-res thumbnail", err);
+		}
 	}
-	return { status: "success", message: "uploaded video and thumbnail" };
+
+	return { status: "success", message: thumbnailGenerated ? "uploaded video and thumbnail" : "uploaded video (no thumbnail - ffmpeg unavailable)" };
 }
 
 app.get("/", (req, res) => {
@@ -581,21 +608,23 @@ app.post("/upload", requireAuth, upload.single("videoFile"), async (req, res) =>
 	try {
 		// convert if necessary
 		if (currentExt !== ".mp4") {
-			ffmpeg.setFfmpegPath(ffmpegStatic);
-			ffmpeg.setFfprobePath(ffprobeStatic.path);
-
-			await new Promise((resolve, reject) => {
-				ffmpeg(uploadedPath).toFormat("mp4").save(targetPath).on("end", resolve).on("error", reject);
-			});
-
-			// remove original non-mp4 file
 			try {
-				await fs.promises.unlink(uploadedPath);
-			} catch (e) {
-				console.error("Failed to remove temp file", e);
-			}
+				await new Promise((resolve, reject) => {
+					ffmpeg(uploadedPath).toFormat("mp4").save(targetPath).on("end", resolve).on("error", reject);
+				});
 
-			uploadedPath = targetPath; // update to converted file
+				// remove original non-mp4 file
+				try {
+					await fs.promises.unlink(uploadedPath);
+				} catch (e) {
+					console.error("Failed to remove temp file", e);
+				}
+
+				uploadedPath = targetPath; // update to converted file
+			} catch (convErr) {
+				console.error("ffmpeg conversion error (uploading original):", convErr.message);
+				// fall back to uploading the original file as-is
+			}
 		}
 
 		// push to GridFS with thumbnail including metadata
