@@ -90,8 +90,14 @@ const corsOptions = {
 	allowedHeaders: ["Content-Type", "Authorization"],
 };
 
-// Handle preflight OPTIONS requests for ALL routes (must come before other middleware)
-app.options("/:any*", cors(corsOptions));
+// Basic health check
+app.get("/", (req, res) => {
+	res.send("Hello World! Your API is running.");
+});
+
+// Dedicated favicon route to prevent it from triggering other logic or crashing
+app.get("/favicon.ico", (req, res) => res.status(204).end());
+
 app.use(cors(corsOptions));
 app.use(express.json()); // parse application/json
 app.use(cookieParser());
@@ -144,16 +150,14 @@ if (!isServerless) {
 async function connectToDatabase(uri) {
 	try {
 		// Wait for the connection to be established (mongoose caches internally too)
-		const conn = await mongoose.connect(uri); // options removed; modern mongoose handles parsing and topology automatically
+		const conn = await mongoose.connect(uri);
 		console.log("Database connected successfully to", conn.connection.db.databaseName);
 		return conn;
 	} catch (err) {
-		console.error("Database connection failed", err.message || err);
-		// log stack to Vercel logs for diagnosis
-		console.error(err.stack);
-		// in a serverless environment we can't just exit, so rethrow
-		if (isServerless) throw err;
-		process.exit(1);
+		console.error("Database connection failed during connectToDatabase:", err.message || err);
+		// In serverless, we return null rather than crashing the whole process
+		// Subsequent route handlers will check connection state and return 503
+		return null;
 	}
 }
 
@@ -671,6 +675,15 @@ app.post("/upload", requireAuth, upload.single("videoFile"), async (req, res) =>
 });
 
 // (server launched above once DB ready)
+
+// Global error-handling middleware (must be at the end of the middleware chain)
+app.use((err, req, res, next) => {
+	console.error("UNHANDLED ERROR:", err.message, err.stack);
+	res.status(500).json({
+		error: "Internal Server Error",
+		message: isServerless ? "A runtime error occurred in the serverless function." : err.message
+	});
+});
 
 // when deployed on a platform like Vercel the framework will import the app
 module.exports = app;
