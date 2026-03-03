@@ -4,26 +4,32 @@ const os = require("os");
 const { MongoClient, ServerApiVersion, GridFSBucket } = require("mongodb");
 const mongoose = require("mongoose");
 const path = require("path");
-const ffmpeg = require("fluent-ffmpeg");
-const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
-const ffprobeInstaller = require("@ffprobe-installer/ffprobe");
+// determine if we're running in a serverless environment (e.g. Vercel)
+const isServerless = !!process.env.VERCEL;
 
-// Set paths once at startup
-try {
-	ffmpeg.setFfmpegPath(ffmpegInstaller.path);
-	ffmpeg.setFfprobePath(ffprobeInstaller.path);
-	console.log("ffmpeg path:", ffmpegInstaller.path);
-	console.log("ffprobe path:", ffprobeInstaller.path);
-} catch (e) {
-	console.error("Failed to set ffmpeg paths:", e.message);
+// Lazy-load ffmpeg and ffprobe only if not on Vercel to avoid size limit issues
+let ffmpeg = null;
+if (!isServerless) {
+	try {
+		ffmpeg = require("fluent-ffmpeg");
+		const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
+		const ffprobeInstaller = require("@ffprobe-installer/ffprobe");
+		ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+		ffmpeg.setFfprobePath(ffprobeInstaller.path);
+		console.log("FFmpeg initialized at:", ffmpegInstaller.path);
+	} catch (err) {
+		console.error("FFmpeg initialization failed. FFmpeg features will be disabled.", err.message);
+		ffmpeg = null;
+	}
+} else {
+	console.log("Vercel environment detected. FFmpeg features are disabled to stay within size limits.");
 }
+
 const cors = require("cors");
 const multer = require("multer");
 const jwt = require("jsonwebtoken");
 const cookieParser = require("cookie-parser");
 
-// determine if we're running in a serverless environment (e.g. Vercel)
-const isServerless = !!process.env.VERCEL;
 
 // compute directories; in serverless use /tmp because other paths are read-only/ephemeral
 const baseDir = isServerless ? os.tmpdir() : __dirname;
@@ -253,17 +259,21 @@ async function runUpload(videoPath, opts = {}) {
 
 	// get duration using ffprobe (paths already set globally at startup)
 	let durationSecs = 0;
-	try {
-		durationSecs = await new Promise((resolve, reject) => {
-			ffmpeg.ffprobe(videoPath, function (err, metadata) {
-				if (err) return reject(err);
-				if (metadata && metadata.format && metadata.format.duration) {
-					resolve(metadata.format.duration);
-				} else resolve(0);
+	if (ffmpeg) {
+		try {
+			durationSecs = await new Promise((resolve, reject) => {
+				ffmpeg.ffprobe(videoPath, function (err, metadata) {
+					if (err) return reject(err);
+					if (metadata && metadata.format && metadata.format.duration) {
+						resolve(metadata.format.duration);
+					} else resolve(0);
+				});
 			});
-		});
-	} catch (e) {
-		console.error("ffprobe error", e);
+		} catch (e) {
+			console.error("ffprobe error (duration will be 0):", e.message);
+		}
+	} else {
+		console.log("ffprobe unavailable — setting duration to 0");
 	}
 
 	// derive names and output path for thumbnail
@@ -294,40 +304,44 @@ async function runUpload(videoPath, opts = {}) {
 	let thumbnailGenerated = false;
 
 	// small thumbnail
-	try {
-		await new Promise((resolve, reject) => {
-			ffmpeg(videoPath)
-				.screenshots({
-					timestamps: [captureTime],
-					filename: path.basename(imagePath),
-					folder: path.dirname(imagePath),
-					size: "320x240",
-				})
-				.on("end", () => resolve())
-				.on("error", (err) => reject(err));
-		});
-		thumbnailGenerated = true;
-	} catch (e) {
-		console.error("ffmpeg thumbnail (small) error:", e.message);
+	if (ffmpeg) {
+		try {
+			await new Promise((resolve, reject) => {
+				ffmpeg(videoPath)
+					.screenshots({
+						timestamps: [captureTime],
+						filename: path.basename(imagePath),
+						folder: path.dirname(imagePath),
+						size: "320x240",
+					})
+					.on("end", () => resolve())
+					.on("error", (err) => reject(err));
+			});
+			thumbnailGenerated = true;
+		} catch (e) {
+			console.error("ffmpeg thumbnail (small) error:", e.message);
+		}
 	}
 
 	// high resolution screenshot
 	const highResName = filename.replace(path.extname(filename), "_highres.png");
 	const highResPath = path.join(thumbDir, highResName);
-	try {
-		await new Promise((resolve, reject) => {
-			ffmpeg(videoPath)
-				.screenshots({
-					timestamps: [captureTime],
-					filename: path.basename(highResPath),
-					folder: path.dirname(highResPath),
-					size: "1280x720",
-				})
-				.on("end", () => resolve())
-				.on("error", (err) => reject(err));
-		});
-	} catch (e) {
-		console.error("ffmpeg thumbnail (high-res) error:", e.message);
+	if (ffmpeg) {
+		try {
+			await new Promise((resolve, reject) => {
+				ffmpeg(videoPath)
+					.screenshots({
+						timestamps: [captureTime],
+						filename: path.basename(highResPath),
+						folder: path.dirname(highResPath),
+						size: "1280x720",
+					})
+					.on("end", () => resolve())
+					.on("error", (err) => reject(err));
+			});
+		} catch (e) {
+			console.error("ffmpeg thumbnail (high-res) error:", e.message);
+		}
 	}
 
 	// upload video (include duration metadata plus title/userId)
@@ -607,7 +621,7 @@ app.post("/upload", requireAuth, upload.single("videoFile"), async (req, res) =>
 
 	try {
 		// convert if necessary
-		if (currentExt !== ".mp4") {
+		if (currentExt !== ".mp4" && ffmpeg) {
 			try {
 				await new Promise((resolve, reject) => {
 					ffmpeg(uploadedPath).toFormat("mp4").save(targetPath).on("end", resolve).on("error", reject);
