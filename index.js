@@ -12,8 +12,12 @@ let ffmpeg = null;
 if (!isServerless) {
 	try {
 		ffmpeg = require("fluent-ffmpeg");
-		const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
-		const ffprobeInstaller = require("@ffprobe-installer/ffprobe");
+		// Use dynamic strings to prevent the Vercel bundler from tracing these huge binaries
+		const ffmpegPkg = "@ffmpeg-installer/ffmpeg";
+		const ffprobePkg = "@ffprobe-installer/ffprobe";
+		const ffmpegInstaller = require(ffmpegPkg);
+		const ffprobeInstaller = require(ffprobePkg);
+
 		ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 		ffmpeg.setFfprobePath(ffprobeInstaller.path);
 		console.log("FFmpeg initialized at:", ffmpegInstaller.path);
