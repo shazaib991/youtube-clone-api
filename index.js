@@ -72,6 +72,10 @@ const upload = multer({ storage });
 require("dotenv").config();
 
 const app = express();
+
+// 1. Extreme priority for favicon to prevent it from triggering complex logic or crashing
+app.get("/favicon.ico", (req, res) => res.status(204).end());
+
 const PORT = process.env.PORT || 3000;
 const ALLOWED_ORIGINS = [
 	"https://react-youtube-clone-woad.vercel.app",
@@ -82,29 +86,26 @@ const ALLOWED_ORIGINS = [
 const corsOptions = {
 	origin: (origin, callback) => {
 		// allow requests with no origin (e.g. curl, mobile apps)
-		if (!origin || ALLOWED_ORIGINS.includes(origin)) {
-			callback(null, true);
-		} else {
-			callback(new Error(`CORS: origin ${origin} not allowed`));
+		if (!origin) return callback(null, true);
+		if (ALLOWED_ORIGINS.includes(origin)) {
+			return callback(null, true);
 		}
+		console.warn(`CORS: origin ${origin} NOT allowed`);
+		// Returning false instead of an Error is cleaner for Express middleware
+		callback(null, false);
 	},
 	credentials: true,
 	methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 	allowedHeaders: ["Content-Type", "Authorization"],
 };
 
-// 1. Handle preflight OPTIONS requests for ALL routes
-app.options("/:any*", cors(corsOptions));
-// 2. Apply CORS to all requests
+// 2. Standard CORS middleware at the top
 app.use(cors(corsOptions));
-
-// Basic health check
+// 3. Health check
 app.get("/", (req, res) => {
 	res.send("Hello World! Your API is running.");
 });
 
-// Dedicated favicon route
-app.get("/favicon.ico", (req, res) => res.status(204).end());
 app.use(express.json()); // parse application/json
 app.use(cookieParser());
 
